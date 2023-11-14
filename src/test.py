@@ -1,22 +1,20 @@
 import GPy, sys, random,os
-from RFM_RBF import RFM_RBF
 os.environ["OMP_NUM_THREADS"] = "1"
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.stats import norm
 from scipy.optimize import minimize
+from RFM_RBF import RFM_RBF
+from ThetaGenerator import ThetaGenerator
 
-def f(X):
-    return -(6*X-2)**2 * np.sin(12*X-4)
+def f(x):
+    return -(6*x-2)**2 * np.sin(12*x-4)
 
-def g(X):
-    dim = X.shape[1]
+def g(X,dim):
     a = 20
     b = 0.2
     c = 2 * np.pi
-    return -(-a * np.exp(-b * np.sqrt(np.sum(X**2,axis = 1)/dim))-np.exp(np.sum(np.cos(c*X),axis =1)/dim) + a+ np.exp(1))
-
-
+    return -a * np.exp(-b * np.sqrt(np.sum(X**2,axis = 1)/dim))-np.exp(np.sum(np.cos(c*X),axis =1)/dim) + a+ np.exp(1)
 
 def expected_improvement(X, X_train, y_train, model, xi=0.01):
     '''
@@ -48,6 +46,8 @@ def expected_improvement(X, X_train, y_train, model, xi=0.01):
 
 # def mes(X,):
 
+
+
 def propose_location(acquisition, X_sample, Y_sample, model, bounds, n_restarts=25):
     '''
     Proposes the next sampling point by optimizing the acquisition function.
@@ -76,79 +76,69 @@ def propose_location(acquisition, X_sample, Y_sample, model, bounds, n_restarts=
             min_val = res.fun
             min_x = res.x           
             
-    return np.atleast_2d(min_x)
+    return min_x.reshape(-1, 1)
 
-def experiment(seed, train_num, n_iter,fig_ok):
-    input_dim = 1
-    random.seed(seed)
-    np.random.seed(seed)
+def main():
+    random.seed(0)
+    np.random.seed(0)
     noise_var = 1.0e-4
-    
-    init_num = 3
-    grid_num = init_num ** input_dim
-    if input_dim == 1:
-        bounds = np.array([[-0.0, 1.0]])
-        X = np.c_[np.arange(bounds[:, 0], bounds[:, 1], 0.01).reshape(-1, 1)]
-        X_train = np.c_[np.random.choice(X.ravel(), train_num,replace=False)]
-        y_true_max = f(0.75724876)
-
-    if input_dim == 2:
-        bounds = np.array([[-32.768, 32.768]])
-        X = np.c_[np.linspace(-32.768, 32.768, init_num)]
-        xx , yy = np.meshgrid(X,X)
-        aa = xx.reshape(grid_num,1)
-        bb = yy.reshape(grid_num,1)
-        X = np.hstack((bb, aa))
-
-    # X = np.c_[np.arange(bounds[:, 0], bounds[:, 1], 0.01).reshape(-1, 1)]
-    train_index = np.random.randint(grid_num,size=train_num)
-    X_train = X[train_index]
+    train_num = 3
+ 
+    bounds = np.array([[-0.0, 1.0]])
+    X = np.c_[np.arange(bounds[:, 0], bounds[:, 1], 0.01).reshape(-1, 1)]
+    X_train = np.c_[np.random.choice(X.ravel(), train_num,replace=False)]
     y = f(X)
     y_train = f(X_train)
 
-    y_max = y_train.max()
-    simple_regret = y_true_max - y_max
-    print('iter:0 ',simple_regret)
-    kernel = GPy.kern.RBF(input_dim = X.shape[1],lengthscale = 1)
+    kernel = GPy.kern.RBF(input_dim = 1,lengthscale = 0.01)
     model = GPy.models.GPRegression(X_train, y_train, kernel=kernel,normalizer = True)
     model['.*Gaussian_noise.variance'].constrain_fixed(noise_var)
+    model['rbf.variance'].constrain_fixed(1.0)
     model.optimize_restarts(num_restarts=10, verbose=0)
     pred_mean, pred_var = model.predict_noiseless(X)
-
+    lengthscale = model.rbf.lengthscale[0]
+    basis_dim = 1000
+    sample_size = 1
+    rfm_feature = RFM_RBF(lengthscale,X.shape[1],variance = 1, basis_dim=basis_dim)
+    features = rfm_feature.transform(X_train)
+    Theta = ThetaGenerator(basis_dim,noise_var)
+    Theta.calc(features,y_train)
+    theta = Theta.getTheta(sample_size)
+    features = rfm_feature.transform(X)
+    f_hat = np.dot(theta,features.T)
     # PLOT
-    if fig_ok:
+    plt.plot(X,y,'r',label = 'true')
+    plt.plot(X,pred_mean,'b',label = 'pred_mean')
+    for i in range(sample_size):
+        plt.plot(X,f_hat[i],'g')#,label = 'rfm')
+    plt.plot(X_train,y_train,'ro',label = 'observed')
+    plt.fill_between(X.ravel(), (pred_mean + 1.96 * np.sqrt(pred_var)).ravel(), (pred_mean - 1.96 * np.sqrt(pred_var)).ravel(), alpha=0.3, color="blue", label="credible interval")
+    plt.legend(loc="lower left")
+    plt.savefig('../out/fig.pdf')
+    plt.close()
+    sys.exit()
+
+    # Number of iterations
+    n_iter = 12
+
+    for i in range(n_iter):
+        # Obtain next sampling point from the acquisition function (expected_improvement)
+        X_next = propose_location(expected_improvement, X_train, y_train, model, bounds)
+        
+        # Obtain next noisy sample from the objective function
+        Y_next = f(X_next)
+        
+        pred_mean, pred_var = model.predict_noiseless(X)
+        # Plot samples, surrogate function and next sampling location
         plt.plot(X,y,'r',label = 'true')
+        for i in range(sample_size):
+            plt.plot(X,f_hat[i],'g')#,label = 'rfm')
         plt.plot(X,pred_mean,'b',label = 'pred_mean')
         plt.plot(X_train,y_train,'ro',label = 'observed')
         plt.fill_between(X.ravel(), (pred_mean + 1.96 * np.sqrt(pred_var)).ravel(), (pred_mean - 1.96 * np.sqrt(pred_var)).ravel(), alpha=0.3, color="blue", label="credible interval")
         plt.legend(loc="lower left")
-        plt.savefig('../out/fig.pdf')
+        plt.savefig('../out/fig'+str(i)+'.pdf')
         plt.close()
-    
-    #BO-LOOP
-    for i in range(n_iter):
-        # Obtain next sampling point from the acquisition function (expected_improvement)
-        X_next = propose_location(expected_improvement, X_train, y_train, model, bounds)
-        # Obtain next noisy sample from the objective function
-        Y_next = f(X_next)
-        if Y_next > y_max:
-            y_max = Y_next
-        
-        pred_mean, pred_var = model.predict_noiseless(X)
-        # Plot samples, surrogate function and next sampling location
-        if fig_ok:
-            plt.plot(X,y,'r',label = 'true')
-            plt.plot(X,pred_mean,'b',label = 'pred_mean')
-            plt.plot(X_train,y_train,'ro',label = 'observed')
-            plt.fill_between(X.ravel(), (pred_mean + 1.96 * np.sqrt(pred_var)).ravel(), (pred_mean - 1.96 * np.sqrt(pred_var)).ravel(), alpha=0.3, color="blue", label="credible interval")
-            plt.legend(loc="lower left")
-            plt.savefig('../out/fig_'+str(i)+'.pdf')
-            plt.close()
-
-        # Caluculate Regret
-        simple_regret = y_true_max - y_max
-        print('iter:'+str(i+1)+' ',simple_regret)
-        # print('point: ',X_next)
 
         # Add sample to previous samples
         X_train = np.vstack((X_train, X_next))
@@ -157,14 +147,15 @@ def experiment(seed, train_num, n_iter,fig_ok):
         # Update Gaussian process with existing samples
         model.set_XY(X_train, y_train)
         model.optimize_restarts(num_restarts=10, verbose=0)
-
-def main():
-    seed = 0
-    train_num = 2
-    n_iter = 10
-    fig_ok = True
-
-    experiment(seed,train_num,n_iter,fig_ok)
+        lengthscale = model.rbf.lengthscale[0]
+        rfm_feature = RFM_RBF(lengthscale,X.shape[1],variance = 1, basis_dim=basis_dim)
+        features = rfm_feature.transform(X_train)
+        Theta = ThetaGenerator(basis_dim,noise_var)
+        Theta.calc(features,y_train)
+        theta = Theta.getTheta(sample_size)
+        features = rfm_feature.transform(X)
+        f_hat = np.dot(theta,features.T)
+        
 
 if __name__ == "__main__":
     main()
