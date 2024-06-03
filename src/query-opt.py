@@ -1,26 +1,33 @@
-import GPy, sys, random, os
-from RFM_RBF import RFM_RBF
-from sklearn.kernel_approximation import RBFSampler
+import os
 
 os.environ["OMP_NUM_THREADS"] = "1"
+import GPy, sys, random
+from RFM_RBF import RFM_RBF
+from sklearn.kernel_approximation import RBFSampler
+from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
+import subprocess
+import pickle
 from scipy.stats import norm
 from scipy.optimize import minimize
 from ThetaGenerator import ThetaGenerator
 from sklearn.utils import check_array, check_random_state, as_float_array
 
+# def f(X):
+#     """FORRESTER FUNCTION
 
-def f(X):
-    """FORRESTER FUNCTION
+#     Args:
+#         X : input
 
-    Args:
-        X : input
+#     Returns:
+#         function's value of input X
+#     """  #
+#     return -((6 * X - 2) ** 2) * np.sin(12 * X - 4)
 
-    Returns:
-        function's value of input X
-    """  #
-    return -((6 * X - 2) ** 2) * np.sin(12 * X - 4)
+
+def f(x):
+    return -(np.sin(x) + np.sin((10.0 / 3.0) * x))
 
 
 def g(X):
@@ -113,23 +120,29 @@ def propose_location(acquisition, X_sample, Y_sample, model, bounds, n_restarts=
     return np.atleast_2d(min_x)
 
 
-def experiment(seed, train_num, n_iter, fig_ok):
+def experiment(
+    seed, train_num, n_iter, input_dim, acq_name, experiment_name, fig_ok, save_ok
+):
     random.seed(seed)
     np.random.seed(seed)
-    input_dim = 1
     noise_var = 1.0e-4
     if input_dim == 1:
         init_num = 100
         grid_num = init_num**input_dim
-        bounds = np.array([[-0.0, 1.0]])
+        bounds = np.array([[-0.2, 6.0]])
+        # bounds = np.array([[-0, 1]])
+        # print()
+        # sys.exit()
         # train_index = np.random.randint(np.random.randint(0, init_num, train_num))
         index_list = range(grid_num)
         train_index = random.sample(index_list, train_num)
-        X = np.c_[np.linspace(0, 1, init_num)]
+        X = np.c_[np.linspace(bounds[:, 0], bounds[:, 1], init_num)]
         X_train = X[train_index]
         y_train = f(X_train)
         y = f(X)
-        y_true_max = f(0.75724876)
+        x_max = 5.145735
+        # x_max = 0.75724876
+        y_true_max = f(x_max)
         acquisition = f
 
     if input_dim == 2:
@@ -151,13 +164,11 @@ def experiment(seed, train_num, n_iter, fig_ok):
 
     y_max = y_train.max()
     simple_regret = y_true_max - y_max
+    simple_regret_list = [simple_regret]
     kernel = GPy.kern.RBF(input_dim=X_train.shape[1], ARD=True)
-    model = GPy.models.GPRegression(
-        X_train, y_train, kernel=kernel
-    )  # , normalizer=True)
+    model = GPy.models.GPRegression(X_train, y_train, kernel=kernel, normalizer=True)
     model[".*Gaussian_noise.variance"].constrain_fixed(noise_var)
-    # model["rbf.variance"].constrain_fixed(1.0)
-    # variance = 1.0
+    model["rbf.variance"].constrain_fixed(1.0)
     model.optimize_restarts(num_restarts=10, verbose=0)
     pred_mean, pred_var = model.predict_noiseless(X)
 
@@ -180,9 +191,13 @@ def experiment(seed, train_num, n_iter, fig_ok):
 
     # BO-LOOP
     for i in range(n_iter):
-        # Obtain next sampling point from the acquisition function (expected_improvement)
-        X_next = propose_location(expected_improvement, X_train, y_train, model, bounds)
-        print("X_next: ", X_next)
+        print("iter: " + str(i))
+        if acq_name == "EI":
+            # Obtain next sampling point from the acquisition function (expected_improvement)
+            X_next = propose_location(
+                expected_improvement, X_train, y_train, model, bounds
+            )
+            print("X_next: ", X_next)
         # Obtain next noisy sample from the objective function
         if input_dim == 1:
             Y_next = f(X_next)
@@ -194,11 +209,9 @@ def experiment(seed, train_num, n_iter, fig_ok):
 
         pred_mean, pred_var = model.predict_noiseless(X)
 
-        print(model.rbf.lengthscale)
-
         # basis_dim = 1000
         # sample_size = 100
-        # # RFM
+        # # # RFM
         # rfm_feature = RFM_RBF(
         #     model.rbf.lengthscale[0],
         #     X.shape[1],
@@ -240,7 +253,7 @@ def experiment(seed, train_num, n_iter, fig_ok):
                 gridspec_kw=dict(height_ratios=[2, 1]),
                 tight_layout=True,
             )
-            axes[0].plot(X, y, "r", label="true")
+            axes[0].plot(X, y, "--r", label="true")
             axes[0].plot(X, pred_mean, "b", label="pred_mean")
             axes[0].plot(X_train, y_train, "kx", label="observed")
             axes[0].axvline(X_next, color="red", linestyle="dashed", linewidth=1)
@@ -256,7 +269,7 @@ def experiment(seed, train_num, n_iter, fig_ok):
                 label="credible interval",
             )
             axes[0].legend(loc="lower left")
-            axes[0].set_ylim(-25, 18)
+            # axes[0].set_ylim(-20, 20)
             # 獲得関数値の計算
             ei = expected_improvement(X.reshape(-1, 1), X_train, y_train, model)
             axes[1].plot(X, ei, "g", label="ei")
@@ -269,7 +282,9 @@ def experiment(seed, train_num, n_iter, fig_ok):
 
         # Caluculate Regret
         simple_regret = y_true_max - y_max
-        print("iter:" + str(i + 1) + " ", simple_regret)
+        simple_regret_list.append(simple_regret)
+
+        print("SR: " + str(simple_regret))
         # inference_regret = y_true - max - func()
         # print('point: ',X_next)
 
@@ -279,17 +294,47 @@ def experiment(seed, train_num, n_iter, fig_ok):
 
         # Update Gaussian process with existing samples
         model.set_XY(X_train, y_train)
-        if i % 5 == 0:
+        if i % 10 == 0:
             model.optimize_restarts(num_restarts=10, verbose=0)
+
+    # save data
+    if save_ok == True:
+        result_dir_path = (
+            f"{Path(__file__).parents[0]}/../out/Test/dim_"
+            + str(input_dim)
+            + "/"
+            + experiment_name
+            + "/"
+            + acq_name
+            + "/seed_"
+            + str(seed)
+            + "/"
+        )
+        _ = subprocess.check_call(["mkdir", "-p", result_dir_path])
+        with open(result_dir_path + "simple_regret.pickle", "wb") as f:
+            pickle.dump(simple_regret_list, f)
 
 
 def main():
-    seed = 1
-    train_num = 5
-    n_iter = 5
-    fig_ok = True
-
-    experiment(seed, train_num, n_iter, fig_ok)
+    train_num = 2
+    n_iter = 10
+    input_dim = 2
+    acq_name = "EI"
+    experiment_name = "Branin"
+    fig_ok = False
+    save_ok = True
+    seed = 10
+    for seed in range(seed):
+        experiment(
+            seed,
+            train_num,
+            n_iter,
+            input_dim,
+            acq_name,
+            experiment_name,
+            fig_ok,
+            save_ok,
+        )
 
 
 if __name__ == "__main__":
