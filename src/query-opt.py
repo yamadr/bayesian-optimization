@@ -3,7 +3,7 @@ import os
 os.environ["OMP_NUM_THREADS"] = "1"
 import GPy, sys, random
 from RFM_RBF import RFM_RBF
-from sklearn.kernel_approximation import RBFSampler
+# from sklearn.kernel_approximation import RBFSampler
 from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
@@ -12,7 +12,8 @@ import pickle
 from scipy.stats import norm
 from scipy.optimize import minimize
 from ThetaGenerator import ThetaGenerator
-from sklearn.utils import check_array, check_random_state, as_float_array
+from joblib import Parallel, delayed
+# from sklearn.utils import check_array, check_random_state, as_float_array
 
 # def f(X):
 #     """FORRESTER FUNCTION
@@ -146,7 +147,7 @@ def experiment(
         acquisition = f
 
     if input_dim == 2:
-        init_num = 20
+        init_num = 40
         grid_num = init_num**input_dim
         bounds = np.array([[-32.768, 32.768]])
         X = np.c_[np.linspace(-32.768, 32.768, init_num)]
@@ -164,103 +165,21 @@ def experiment(
 
     y_max = y_train.max()
     simple_regret = y_true_max - y_max
-    simple_regret_list = [simple_regret]
-    kernel = GPy.kern.RBF(input_dim=X_train.shape[1], ARD=True)
-    model = GPy.models.GPRegression(X_train, y_train, kernel=kernel, normalizer=True)
-    model[".*Gaussian_noise.variance"].constrain_fixed(noise_var)
-    model["rbf.variance"].constrain_fixed(1.0)
-    model.optimize_restarts(num_restarts=10, verbose=0)
-    pred_mean, pred_var = model.predict_noiseless(X)
-
-    # PLOT
-    if fig_ok:
-        plt.plot(X, y, "r", label="true")
-        plt.plot(X, pred_mean, "b", label="pred_mean")
-        plt.plot(X_train, y_train, "ro", label="observed")
-        plt.fill_between(
-            X.ravel(),
-            (pred_mean + 1.96 * np.sqrt(pred_var)).ravel(),
-            (pred_mean - 1.96 * np.sqrt(pred_var)).ravel(),
-            alpha=0.3,
-            color="blue",
-            label="credible interval",
-        )
-        plt.legend(loc="lower left")
-        plt.savefig("../out/fig.pdf")
-        plt.close()
-
-    # BO-LOOP
-    for i in range(n_iter):
-        print("iter: " + str(i))
-        if acq_name == "EI":
-            # Obtain next sampling point from the acquisition function (expected_improvement)
-            X_next = propose_location(
-                expected_improvement, X_train, y_train, model, bounds
-            )
-            print("X_next: ", X_next)
-        # Obtain next noisy sample from the objective function
-        if input_dim == 1:
-            Y_next = f(X_next)
-        if input_dim == 2:
-            Y_next = g(X_next)
-
-        if Y_next > y_max:
-            y_max = Y_next
-
+    simple_regret_list = simple_regret
+    if not acq_name == 'Random':
+        kernel = GPy.kern.RBF(input_dim=X_train.shape[1], ARD=True)
+        model = GPy.models.GPRegression(X_train, y_train, kernel=kernel, normalizer=True)
+        model[".*Gaussian_noise.variance"].constrain_fixed(noise_var)
+        model["rbf.variance"].constrain_fixed(1.0)
+        model.optimize_restarts(num_restarts=10, verbose=0)
         pred_mean, pred_var = model.predict_noiseless(X)
 
-        # basis_dim = 1000
-        # sample_size = 100
-        # # # RFM
-        # rfm_feature = RFM_RBF(
-        #     model.rbf.lengthscale[0],
-        #     X.shape[1],
-        #     variance=model.rbf.variance[0],
-        #     basis_dim=basis_dim,
-        # )
-        # features = rfm_feature.transform(X_train)
-        # Theta = ThetaGenerator(basis_dim, noise_var)
-        # Theta.calc(features, y_train)
-        # theta = Theta.getTheta(sample_size)
-        # feature = rfm_feature.transform(X)
-        # f_hat = np.dot(feature, theta.T)
-        # f_hat = f_hat.T
-
-        # RFM ライブラリー使用版 (未検証)
-        # rbf_feature = RBFSampler(
-        #     gamma=1 / (2 * model.rbf.lengthscale[0] ** 2),
-        #     n_components=basis_dim,
-        #     random_state=1,
-        # )
-        # features = rbf_feature.fit_transform(X)
-        # Theta = ThetaGenerator(basis_dim, noise_var)
-        # Theta.calc_init(features)
-        # theta = Theta.getTheta(sample_size)
-        # f_hat = np.dot(theta, features.T)
-
-        # 離散型(正解確認用)
-        # me, gpy_pred_cov = model.predict(X, full_cov=True)
-        # z = np.random.randn(len(X), sample_size)
-        # A = np.linalg.cholesky(gpy_pred_cov)
-        # f_hat = me + np.dot(A, z)
-        # f_hat = f_hat.T
-
-        # Plot samples, surrogate function and next sampling location
+        # PLOT
         if fig_ok:
-            fig, axes = plt.subplots(
-                2,
-                1,
-                gridspec_kw=dict(height_ratios=[2, 1]),
-                tight_layout=True,
-            )
-            axes[0].plot(X, y, "--r", label="true")
-            axes[0].plot(X, pred_mean, "b", label="pred_mean")
-            axes[0].plot(X_train, y_train, "kx", label="observed")
-            axes[0].axvline(X_next, color="red", linestyle="dashed", linewidth=1)
-            # RFMの表示
-            # for j in range(f_hat.shape[0]):
-            #     axes[0].plot(X, f_hat[j], "g")
-            axes[0].fill_between(
+            plt.plot(X, y, "r", label="true")
+            plt.plot(X, pred_mean, "b", label="pred_mean")
+            plt.plot(X_train, y_train, "ro", label="observed")
+            plt.fill_between(
                 X.ravel(),
                 (pred_mean + 1.96 * np.sqrt(pred_var)).ravel(),
                 (pred_mean - 1.96 * np.sqrt(pred_var)).ravel(),
@@ -268,35 +187,130 @@ def experiment(
                 color="blue",
                 label="credible interval",
             )
-            axes[0].legend(loc="lower left")
-            # axes[0].set_ylim(-20, 20)
-            # 獲得関数値の計算
-            ei = expected_improvement(X.reshape(-1, 1), X_train, y_train, model)
-            axes[1].plot(X, ei, "g", label="ei")
-
-            # ucb = upper_confidence_bound(X.reshape(-1, 1), X_train, y_train, model)
-            # axes[1].plot(X, ucb, "b", label="ucb")
-            axes[1].axvline(X_next, color="red", linestyle="dashed", linewidth=1)
-            plt.savefig("../out/fig_" + str(i) + ".pdf")
+            plt.legend(loc="lower left")
+            plt.savefig("../out/fig.pdf")
             plt.close()
 
-        # Caluculate Regret
-        simple_regret = y_true_max - y_max
-        simple_regret_list.append(simple_regret)
+        # BO-LOOP
+        for i in range(n_iter):
+            print("iter: " + str(i))
+            if acq_name == "EI":
+                # Obtain next sampling point from the acquisition function (expected_improvement)
+                X_next = propose_location(
+                    expected_improvement, X_train, y_train, model, bounds
+                )
+                # print("X_next: ", X_next)
+            # Obtain next noisy sample from the objective function
+            if input_dim == 1:
+                Y_next = f(X_next)
+            if input_dim == 2:
+                Y_next = g(X_next)
 
-        print("SR: " + str(simple_regret))
-        # inference_regret = y_true - max - func()
-        # print('point: ',X_next)
+            if Y_next > y_max:
+                y_max = Y_next
 
-        # Add sample to previous samples
-        X_train = np.vstack((X_train, X_next))
-        y_train = np.vstack((y_train, Y_next))
+            pred_mean, pred_var = model.predict_noiseless(X)
 
-        # Update Gaussian process with existing samples
-        model.set_XY(X_train, y_train)
-        if i % 10 == 0:
-            model.optimize_restarts(num_restarts=10, verbose=0)
+            # basis_dim = 1000
+            # sample_size = 100
+            # # # RFM
+            # rfm_feature = RFM_RBF(
+            #     model.rbf.lengthscale[0],
+            #     X.shape[1],
+            #     variance=model.rbf.variance[0],
+            #     basis_dim=basis_dim,
+            # )
+            # features = rfm_feature.transform(X_train)
+            # Theta = ThetaGenerator(basis_dim, noise_var)
+            # Theta.calc(features, y_train)
+            # theta = Theta.getTheta(sample_size)
+            # feature = rfm_feature.transform(X)
+            # f_hat = np.dot(feature, theta.T)
+            # f_hat = f_hat.T
 
+            # RFM ライブラリー使用版 (未検証)
+            # rbf_feature = RBFSampler(
+            #     gamma=1 / (2 * model.rbf.lengthscale[0] ** 2),
+            #     n_components=basis_dim,
+            #     random_state=1,
+            # )
+            # features = rbf_feature.fit_transform(X)
+            # Theta = ThetaGenerator(basis_dim, noise_var)
+            # Theta.calc_init(features)
+            # theta = Theta.getTheta(sample_size)
+            # f_hat = np.dot(theta, features.T)
+
+            # 離散型(正解確認用)
+            # me, gpy_pred_cov = model.predict(X, full_cov=True)
+            # z = np.random.randn(len(X), sample_size)
+            # A = np.linalg.cholesky(gpy_pred_cov)
+            # f_hat = me + np.dot(A, z)
+            # f_hat = f_hat.T
+
+            # Plot samples, surrogate function and next sampling location
+            if fig_ok:
+                fig, axes = plt.subplots(
+                    2,
+                    1,
+                    gridspec_kw=dict(height_ratios=[2, 1]),
+                    tight_layout=True,
+                )
+                axes[0].plot(X, y, "--r", label="true")
+                axes[0].plot(X, pred_mean, "b", label="pred_mean")
+                axes[0].plot(X_train, y_train, "kx", label="observed")
+                axes[0].axvline(X_next, color="red", linestyle="dashed", linewidth=1)
+                # RFMの表示
+                # for j in range(f_hat.shape[0]):
+                #     axes[0].plot(X, f_hat[j], "g")
+                axes[0].fill_between(
+                    X.ravel(),
+                    (pred_mean + 1.96 * np.sqrt(pred_var)).ravel(),
+                    (pred_mean - 1.96 * np.sqrt(pred_var)).ravel(),
+                    alpha=0.3,
+                    color="blue",
+                    label="credible interval",
+                )
+                axes[0].legend(loc="lower left")
+                # axes[0].set_ylim(-20, 20)
+                # 獲得関数値の計算
+                ei = expected_improvement(X.reshape(-1, 1), X_train, y_train, model)
+                axes[1].plot(X, ei, "g", label="ei")
+
+                # ucb = upper_confidence_bound(X.reshape(-1, 1), X_train, y_train, model)
+                # axes[1].plot(X, ucb, "b", label="ucb")
+                axes[1].axvline(X_next, color="red", linestyle="dashed", linewidth=1)
+                plt.savefig("../out/fig_" + str(i) + ".pdf")
+                plt.close()
+
+            # Caluculate Regret
+            simple_regret = y_true_max - y_max
+            simple_regret_list = np.append(simple_regret_list, simple_regret)
+
+            # print("SR: ", simple_regret)
+            # inference_regret = y_true - max - func()
+            # print('point: ',X_next)
+
+            # Add sample to previous samples
+            X_train = np.vstack((X_train, X_next))
+            y_train = np.vstack((y_train, Y_next))
+
+            # Update Gaussian process with existing samples
+            model.set_XY(X_train, y_train)
+            if i % 10 == 0:
+                model.optimize_restarts(num_restarts=10, verbose=0)
+    else:
+        sample_index_list = random.sample(list(set(index_list)^set(train_index)),n_iter)
+        # print(sample_list[0])
+        # print(g(np.c_[sample_list[0]]))
+        for i in range(n_iter):
+            X_next = X[sample_index_list[i]]
+            Y_next = g(np.atleast_2d(X_next))
+            if y_max < Y_next:
+                y_max = Y_next
+                simple_regret = (y_true_max - y_max)
+            # print("SR: ", simple_regret)
+            simple_regret_list = np.append(simple_regret_list,simple_regret)
+    print(simple_regret_list)
     # save data
     if save_ok == True:
         result_dir_path = (
@@ -316,26 +330,30 @@ def experiment(
 
 
 def main():
-    train_num = 2
-    n_iter = 10
+    train_num = 10
+    n_iter = 1600-train_num
     input_dim = 2
     acq_name = "EI"
     experiment_name = "Branin"
     fig_ok = False
     save_ok = True
-    seed = 10
-    for seed in range(seed):
-        experiment(
-            seed,
-            train_num,
+    parallel_num = 10
+    # experiment(0, train_num,
+    #         n_iter,
+    #         input_dim,
+    #         acq_name,
+    #         experiment_name,
+    #         fig_ok,
+    #         save_ok)
+    _ = Parallel(n_jobs=parallel_num)([
+            delayed(experiment)(i, train_num,
             n_iter,
             input_dim,
             acq_name,
             experiment_name,
             fig_ok,
-            save_ok,
-        )
-
+            save_ok,) for i in range(parallel_num)
+        ])
 
 if __name__ == "__main__":
     main()
